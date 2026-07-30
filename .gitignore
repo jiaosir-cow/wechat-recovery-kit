@@ -1,0 +1,16 @@
+# 隐私与产物，绝不入库
+01_副本存放/**
+!01_副本存放/.gitkeep
+!01_副本存放/密钥.txt
+03_解密输出/**
+!03_解密输出/.gitkeep
+04_恢复输出/**
+!04_恢复输出/.gitkeep
+all_keys.json
+*.db
+*.db-wal
+*.db-shm
+*.db-backup
+*.material
+*_decrypted_pages.bin
+__pycache__/
