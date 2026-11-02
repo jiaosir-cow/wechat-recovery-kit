@@ -115,13 +115,15 @@ def carve_page(page, pgno, want_session, msgmode, rows_out):
     regions = []  # (起点, 可用长度, 来源)
     # 1) freeblock 链
     fb = fb_head
-    guard = 0
-    while fb and fb < USABLE and guard < 500:
-        guard += 1
+    seen = set()
+    while fb and fb + 4 <= USABLE and fb not in seen and len(seen) < 500:
+        seen.add(fb)
         nxt, sz = struct.unpack(">HH", usable[fb:fb + 4])
-        if sz < 4 or fb + sz > USABLE + 4:
+        if sz < 4 or fb + sz > USABLE:
             break
         regions.append((fb + 4, sz - 4, "freeblock"))
+        if not nxt or nxt == fb:
+            break
         fb = nxt
     # 2) 未分配区（cell 指针数组末端 ~ cell 内容区起点）
     ua_start = hdr_sz + ncell * 2
@@ -133,7 +135,12 @@ def carve_page(page, pgno, want_session, msgmode, rows_out):
         # 在区域内逐偏移尝试 record 解析
         off = start
         end = start + length
-        while off < end - 8:
+        limit = end - 2
+        while off < limit:
+            if usable[off] == 0:
+                rest = usable[off:limit]
+                off += max(1, len(rest) - len(rest.lstrip(b"\x00")))
+                continue
             r = parse_record(usable, off, end - off)
             if r is None:
                 off += 1
@@ -176,17 +183,34 @@ def main():
     if _under_live_wechat(out_csv):
         print("[错误] 拒绝把 CSV 写进微信数据目录。请改到本仓库的 04_恢复输出。")
         sys.exit(1)
+    if not os.path.isfile(db_path):
+        print(f"[错误] 找不到数据库 {db_path}")
+        sys.exit(1)
+    if os.path.normcase(os.path.abspath(out_csv)) == os.path.normcase(os.path.abspath(db_path)):
+        print("[错误] 输出 CSV 不能覆盖输入数据库")
+        sys.exit(1)
     want_session = None
     msgmode = False
     for i, a in enumerate(args):
         if a == "--session" and i + 1 < len(args):
-            want_session = int(args[i + 1])
+            try:
+                want_session = int(args[i + 1])
+            except ValueError:
+                print("[错误] --session 需要整数")
+                sys.exit(2)
         if a == "--msgmode":
             msgmode = True
+    parent = os.path.dirname(os.path.abspath(out_csv))
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as e:
+        print(f"[错误] 无法创建输出目录: {type(e).__name__}")
+        sys.exit(1)
     sz = os.path.getsize(db_path)
     npages = sz // PAGE_SZ
     rows_out = []
     skipped = 0
+    reasons = {}
     with open(db_path, "rb") as f:
         for pgno in range(1, npages + 1):
             page = f.read(PAGE_SZ)
@@ -194,10 +218,15 @@ def main():
                 break
             try:
                 carve_page(page, pgno, want_session, msgmode, rows_out)
-            except Exception:
+            except Exception as e:
                 skipped += 1
+                name = type(e).__name__
+                reasons[name] = reasons.get(name, 0) + 1
                 continue
     print(f"扫描 {npages} 页，还原记录 {len(rows_out)} 条，跳过无法解析的页 {skipped} 页")
+    if reasons:
+        detail = ", ".join(f"{k} {v}" for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:5])
+        print(f"跳过原因: {detail}")
     with open(out_csv, "w", newline="", encoding="utf-8-sig") as fo:
         w = csv.writer(fo)
         w.writerow(["页码", "来源", "偏移", "列数", "创建时间", "发送者/会话", "类型", "文本", "原始列"])

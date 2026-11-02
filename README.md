@@ -16,7 +16,7 @@ pip install pycryptodome
    - 4.x 默认在 `C:\Users\<用户名>\Documents\xwechat_files\` 下，文件夹名以 `wxid_` 开头。
    - 3.x 默认在 `C:\Users\<用户名>\Documents\WeChat Files\`。
    - 4.x 如果改过位置，在微信「设置 → 存储管理」里查看。
-2. 把已经取得的 64 位十六进制密钥写入 `01_副本存放\密钥.txt`（单独一行就是全局密钥，也可以写 `文件名=密钥`）。取 key 工具生成的 `all_keys.json` 放在同一目录时优先使用。密钥与这台电脑和这个账号绑定，只能在登录过该微信的电脑上取得。**本仓库不包含 DbkeyHook、wx_key、wechat-dump-rs 或其他取 key 程序，也不说明如何从进程里提取密钥。**
+2. 复制 `01_副本存放\密钥.example.txt` 为 `01_副本存放\密钥.txt`，把已经取得的 64 位十六进制密钥写进去（单独一行就是全局密钥，也可以写 `文件名=密钥`）。取 key 工具生成的 `all_keys.json` 放在同一目录时优先使用。密钥与这台电脑和这个账号绑定，只能在登录过该微信的电脑上取得。`密钥.txt` 已被 `.gitignore` 忽略。**本仓库不包含 DbkeyHook、wx_key、wechat-dump-rs 或其他取 key 程序，也不说明如何从进程里提取密钥。**
 3. 双击 `第1步_解密数据库.bat`。明文库在 `03_解密输出\`。
 4. 双击 `第2步_扫描已删除记录.bat`。结果在 `04_恢复输出\`，先打开 `搜索结果.txt` 和各 `*_关键词上下文.txt`。更换关键词：
 
@@ -24,14 +24,14 @@ pip install pycryptodome
 第2步_扫描已删除记录.bat --关键词 某某
 ```
 
-可选雕刻（在仓库根目录执行）。WAL 解密页写入 `04_恢复输出\`，不会写到 WAL 旁边：
+可选雕刻（在仓库根目录执行）。WAL 解密页写入 `04_恢复输出\`，不会写到 WAL 旁边。密钥放在文件里，不放在命令行：
 
 ```bat
-python tools\wal_carve.py 01_副本存放\<wxid>\db_storage\message\message_fts.db-wal 01_副本存放\<wxid>\db_storage\message\message_fts.db <64位密钥hex>
+python tools\wal_carve.py 01_副本存放\<wxid>\db_storage\message\message_fts.db-wal 01_副本存放\<wxid>\db_storage\message\message_fts.db --key-file 01_副本存放\密钥.txt
 python tools\carver.py 03_解密输出\<相对路径>\message_fts.db 04_恢复输出\carve.csv --session <会话ID>
 ```
 
-`wal_carve.py` 的密钥会出现在命令行历史中。`carver.py` 只接受已经解密的库。两条命令在参数不足时会打印用法并退出；`decrypt_all.py` 的现成自检是 `python tools\decrypt_all.py --selftest`（只构造临时测试库，不读取微信目录）。
+`carver.py` 只接受已经解密的库。`wal_carve.py` 按 4.x 页格式核对主库；3.x 主库仍由第 1 步解密，不在这条命令里解 WAL。两条命令在参数不足时会打印用法并退出。第 1 步若解密后读不出表，会删掉不完整的输出文件。第 2 步按块搜索 UTF-8 和 UTF-16LE，不把整个库读进内存。`decrypt_all.py` 的现成自检是 `python tools\decrypt_all.py --selftest`（只构造临时测试库，不读取微信目录）。
 
 ## 恢复不了什么
 
@@ -46,8 +46,8 @@ python tools\carver.py 03_解密输出\<相对路径>\message_fts.db 04_恢复�
 |---|---|
 | `第1步_解密数据库.bat` → `tools/decrypt_all.py` | 只读 `01_副本存放` 里的 `.db`，自动区分 SQLCipher3（3.x）和 SQLCipher4-WCDB（4.x），以及 raw key / passphrase（passphrase 用 PBKDF2-HMAC-SHA512，迭代 256000）。输出到 `03_解密输出` |
 | `第2步_扫描已删除记录.bat` → `tools/scan_all.py` | 对解密库做 sqlite `.recover`、空闲页解析，并在原始字节里搜索关键词，导出命中点前后 300 字节。汇总为 `搜索结果.txt` |
-| `tools/carver.py` | 读解密后的库，从 freeblock 和页内未分配区还原删除行，写出 CSV |
-| `tools/wal_carve.py` | 解密 WAL 帧，结果写到 `04_恢复输出\<wal文件名>_decrypted_pages.bin` |
+| `tools/carver.py` | 读解密后的库，从 freeblock 和页内未分配区还原删除行，包括较短的残留。写出 CSV。拒绝覆盖输入库，也拒绝写进微信目录 |
+| `tools/wal_carve.py` | 分帧解密 WAL。密钥用 `--key-file`。结果写到 `04_恢复输出\<wal文件名>_decrypted_pages.bin`，并报告解密异常和页类型不符的帧数 |
 | `tools/sqlite3/` | SQLite 官方命令行（Public Domain） |
 | `tools/sqlite-parser/` | SQLite-Deleted-Records-Parser 的 Python 3 移植 |
 
@@ -55,7 +55,7 @@ python tools\carver.py 03_解密输出\<相对路径>\message_fts.db 04_恢复�
 
 ```
 wechat-recovery-kit\
-├─ 01_副本存放\      只放副本和密钥.txt / all_keys.json
+├─ 01_副本存放\      只放副本、密钥.txt 和 all_keys.json。仓库里只有密钥.example.txt
 ├─ 03_解密输出\      第1步产物
 ├─ 04_恢复输出\      第2步和雕刻产物
 ├─ tools\
@@ -67,7 +67,7 @@ wechat-recovery-kit\
 
 - 第 1 步只读 `01_副本存放`，写入 `03_解密输出`。
 - `wal_carve.py` 和 `carver.py` 如果发现输出路径位于 `xwechat_files` 或 `WeChat Files` 下，会直接退出，不写文件。
-- `密钥.txt` 和 `all_keys.json` 只留在本机。不要提交，不要上传。`.gitignore` 已忽略 `all_keys.json`、数据库和 `03`/`04` 里的产物。仓库里的 `密钥.txt` 只有注释，没有可用密钥。
+- `密钥.txt` 和 `all_keys.json` 只留在本机。不要提交，不要上传。`.gitignore` 已忽略 `密钥.txt`、`all_keys.json`、数据库和 `03`/`04` 里的产物。仓库里只保留没有密钥的 `密钥.example.txt`。
 - 恢复出来的文本是个人通信，用完请自行删除。
 
 ## 第三方组件

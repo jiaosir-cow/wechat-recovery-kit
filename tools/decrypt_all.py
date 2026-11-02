@@ -28,6 +28,32 @@ SRC_DIR = os.path.join(ROOT, "01_副本存放")
 OUT_DIR = os.path.join(ROOT, "03_解密输出")
 
 
+def _under_live_wechat(path):
+    norm = os.path.normcase(os.path.abspath(path))
+    return ("\\xwechat_files\\" in norm) or ("\\wechat files\\" in norm)
+
+
+def _inside(root, path):
+    root_r = os.path.normcase(os.path.abspath(root))
+    path_r = os.path.normcase(os.path.abspath(path))
+    try:
+        return os.path.commonpath([root_r, path_r]) == root_r
+    except ValueError:
+        return False
+
+
+def _read_key_file(path):
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                line = line.rsplit("=", 1)[1].strip()
+            return line.lower().removeprefix("0x")
+    return ""
+
+
 # ---------- 解密核心（4.x 算法与 wechat-decrypt/decrypt_db.py 一致；3.x 为经典 SQLCipher3 参数，自动识别） ----------
 PROFILES = {
     "4.x": dict(reserve=80, iv_off=(-80, -64), hmac_len=64, hmac_algo="sha512"),
@@ -104,63 +130,96 @@ def decrypt_database(db_path, out_path, enc_key, quiet=False):
         conn.close()
         return True, f"微信{name}格式/{mode}密钥，表数量 {n}"
     except Exception as e:
-        return False, f"解密后校验失败: {e}"
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+        return False, f"解密后校验失败: {e}（已删除不完整输出）"
 
 
 # ---------- 密钥收集 ----------
 def load_keys():
     """返回 dict: 各种形式的相对路径/文件名 -> enc_key(bytes)，外加 ('*',) 表示全局单密钥"""
     keys = {}
+    def take_hex(text):
+        g = str(text).strip().lower().removeprefix("0x")
+        if len(g) != 64 or any(c not in "0123456789abcdef" for c in g):
+            return None
+        return bytes.fromhex(g)
+
     jf = os.path.join(SRC_DIR, "all_keys.json")
     if os.path.exists(jf):
         with open(jf, encoding="utf-8") as f:
-            data = json.load(f)
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                print("[错误] all_keys.json 不是合法 JSON，已停止")
+                sys.exit(1)
+        if not isinstance(data, dict):
+            print("[错误] all_keys.json 的内容必须是对象，已停止")
+            sys.exit(1)
+        bad = 0
         for k, v in data.items():
-            keys[k.replace("/", "\\")] = bytes.fromhex(v["enc_key"] if isinstance(v, dict) else v)
-        print(f"[密钥] 从 all_keys.json 载入 {len(keys)} 条")
+            try:
+                raw = v["enc_key"] if isinstance(v, dict) else v
+                got = take_hex(raw)
+            except (KeyError, TypeError, AttributeError):
+                got = None
+            if got is None:
+                bad += 1
+                continue
+            keys[str(k).replace("/", "\\")] = got
+        print(f"[密钥] 从 all_keys.json 载入 {len(keys)} 条" + (f"，跳过 {bad} 条无法解析的记录" if bad else ""))
     tf = os.path.join(SRC_DIR, "密钥.txt")
     if os.path.exists(tf):
         n = 0
+        bad = 0
         with open(tf, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
                 if "=" not in line:
-                    # 单独一行的 64 位 hex 视为全局通用密钥
-                    g = line.lower().removeprefix("0x")
-                    if len(g) == 64 and all(c in "0123456789abcdef" for c in g):
-                        keys["*"] = bytes.fromhex(g)
-                        n += 1
+                    got = take_hex(line)
+                    if got is None:
+                        bad += 1
+                        continue
+                    keys["*"] = got
+                    n += 1
                     continue
                 name, hexkey = line.rsplit("=", 1)
                 name = name.strip().replace("/", "\\")
-                hexkey = hexkey.strip().lower().removeprefix("0x")
-                if len(hexkey) == 64:
-                    keys[name] = bytes.fromhex(hexkey)
-                    n += 1
-        print(f"[密钥] 从 密钥.txt 载入 {n} 条")
+                got = take_hex(hexkey)
+                if got is None or not name:
+                    bad += 1
+                    continue
+                keys[name] = got
+                n += 1
+        print(f"[密钥] 从 密钥.txt 载入 {n} 条" + (f"，跳过 {bad} 条无法解析的行" if bad else ""))
     return keys
 
 
 def find_key_for(rel_path, keys, single_key):
-    """按 全相对路径 -> 末两级路径 -> 文件名 顺序匹配"""
+    """按更长的路径优先。全路径、末两级、文件名，以及带分隔符的后缀都算匹配。"""
     rp = rel_path.replace("/", "\\")
-    if rp in keys:
-        return keys[rp]
-    parts = rp.split("\\")
-    for k, v in keys.items():
-        if rp.endswith(k) or k.endswith(rp):
-            return v
-    if len(parts) >= 2:
-        tail2 = "\\".join(parts[-2:])
-        for k, v in keys.items():
-            if k.endswith(tail2) or tail2.endswith(k):
-                return v
+    parts = [p for p in rp.split("\\") if p]
+    if not parts:
+        return single_key
+    tail2 = "\\".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
     base = parts[-1]
-    if base in keys:
-        return keys[base]
-    return single_key
+    best = None
+    best_len = -1
+    for k, v in keys.items():
+        if k == "*":
+            continue
+        kn = k.replace("/", "\\").strip("\\")
+        if not kn:
+            continue
+        matched = kn in (rp, tail2, base) or rp.endswith("\\" + kn) or kn.endswith("\\" + rp)
+        if matched and len(kn) > best_len:
+            best = v
+            best_len = len(kn)
+    return best if best is not None else single_key
 
 
 # ---------- 自检：按微信 4.x / 3.x / 4.x-passphrase 三种形态各加密一个真 sqlite 库，再解密比对 ----------
@@ -240,10 +299,42 @@ def main():
     args = sys.argv[1:]
     if "--selftest" in args:
         selftest(); return
+    if _under_live_wechat(OUT_DIR) or _under_live_wechat(SRC_DIR):
+        print("[错误] 本仓库位于微信数据目录下，已停止。请把仓库放到 xwechat_files / WeChat Files 之外。")
+        sys.exit(1)
     single_key = None
-    if "--key" in args:
+
+    def parse_cli_key(text):
+        try:
+            got = bytes.fromhex(text.strip().lower().removeprefix("0x"))
+        except ValueError:
+            print("[错误] 密钥不是十六进制，未开始解密")
+            sys.exit(2)
+        if len(got) != KEY_SZ:
+            print("[错误] 密钥必须是 32 字节（64 位十六进制），未开始解密")
+            sys.exit(2)
+        return got
+
+    if "--key-file" in args:
+        i = args.index("--key-file")
+        if i + 1 >= len(args):
+            print("[错误] --key-file 后面需要路径")
+            sys.exit(2)
+        try:
+            text = _read_key_file(args[i + 1])
+        except OSError as e:
+            print(f"[错误] 读不到密钥文件: {type(e).__name__}")
+            sys.exit(1)
+        if not text:
+            print("[错误] 密钥文件里没有可用的十六进制密钥")
+            sys.exit(1)
+        single_key = parse_cli_key(text)
+    elif "--key" in args:
         i = args.index("--key")
-        single_key = bytes.fromhex(args[i + 1].strip().lower().removeprefix("0x"))
+        if i + 1 >= len(args):
+            print("[错误] --key 后面需要 64 位十六进制。密钥放进 01_副本存放\\密钥.txt 或使用 --key-file，避免留在命令行历史里。")
+            sys.exit(2)
+        single_key = parse_cli_key(args[i + 1])
     if not os.path.isdir(SRC_DIR):
         print(f"[错误] 找不到 {SRC_DIR}"); sys.exit(1)
     db_list = []
@@ -262,7 +353,7 @@ def main():
         s = input("请粘贴 64 位十六进制密钥（对所有库尝试同一密钥），直接回车退出: ").strip()
         if not s:
             print("已退出。"); sys.exit(1)
-        single_key = bytes.fromhex(s.lower().removeprefix("0x"))
+        single_key = parse_cli_key(s)
     ok_n, fail_n = 0, 0
     fails = []
     for path in sorted(db_list):
@@ -275,18 +366,30 @@ def main():
             print(f"[跳过] {rel} —— 没有匹配密钥")
             fails.append(rel); fail_n += 1; continue
         out_path = os.path.join(OUT_DIR, rel)
+        if not _inside(OUT_DIR, out_path) or _under_live_wechat(out_path):
+            print(f"[跳过] {rel} —— 输出路径越出 03_解密输出")
+            fails.append(rel); fail_n += 1; continue
         print(f"[解密] {rel} ...", end=" ", flush=True)
         ok, msg = decrypt_database(path, out_path, key)
         if ok:
             print(f"成功（{msg}）"); ok_n += 1
         else:
             print(f"失败：{msg}"); fails.append(rel); fail_n += 1
-        # 附带把 wal/shm/backup 复制到输出目录旁，供后续处理
+            continue
         for cand in (path + "-wal", path + "-shm", path[:-3] + "-backup", path + "-backup"):
-            if os.path.exists(cand):
-                dest = cand.replace(SRC_DIR, OUT_DIR, 1)
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                shutil.copy2(cand, dest)
+            if not os.path.isfile(cand):
+                continue
+            try:
+                rel_cand = os.path.relpath(cand, SRC_DIR)
+            except ValueError:
+                print(f"    [跳过附件] {os.path.basename(cand)} 不在副本目录内")
+                continue
+            dest = os.path.join(OUT_DIR, rel_cand)
+            if not _inside(OUT_DIR, dest) or _under_live_wechat(dest):
+                print(f"    [跳过附件] {os.path.basename(cand)} 的输出路径不安全")
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(cand, dest)
     print("=" * 50)
     print(f"完成：成功 {ok_n} 个，失败/跳过 {fail_n} 个")
     print(f"解密输出目录: {OUT_DIR}")
