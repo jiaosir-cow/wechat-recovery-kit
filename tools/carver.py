@@ -161,18 +161,32 @@ def carve_page(page, pgno, want_session, msgmode, rows_out):
                 off += 1
 
 
+def _under_live_wechat(path):
+    norm = os.path.normcase(os.path.abspath(path))
+    return ("\\xwechat_files\\" in norm) or ("\\wechat files\\" in norm)
+
+
 def main():
-    db_path, out_csv = sys.argv[1], sys.argv[2]
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help") or len(args) < 2:
+        print("用法: python carver.py <解密后的db> <输出.csv> [--session N] [--msgmode]")
+        print("只读数据库。拒绝把 CSV 写进微信数据目录（xwechat_files / WeChat Files）。")
+        sys.exit(0 if args and args[0] in ("-h", "--help") else 2)
+    db_path, out_csv = args[0], args[1]
+    if _under_live_wechat(out_csv):
+        print("[错误] 拒绝把 CSV 写进微信数据目录。请改到本仓库的 04_恢复输出。")
+        sys.exit(1)
     want_session = None
     msgmode = False
-    for i, a in enumerate(sys.argv):
-        if a == "--session":
-            want_session = int(sys.argv[i + 1])
+    for i, a in enumerate(args):
+        if a == "--session" and i + 1 < len(args):
+            want_session = int(args[i + 1])
         if a == "--msgmode":
             msgmode = True
     sz = os.path.getsize(db_path)
     npages = sz // PAGE_SZ
     rows_out = []
+    skipped = 0
     with open(db_path, "rb") as f:
         for pgno in range(1, npages + 1):
             page = f.read(PAGE_SZ)
@@ -181,8 +195,9 @@ def main():
             try:
                 carve_page(page, pgno, want_session, msgmode, rows_out)
             except Exception:
+                skipped += 1
                 continue
-    print(f"扫描 {npages} 页，还原记录 {len(rows_out)} 条")
+    print(f"扫描 {npages} 页，还原记录 {len(rows_out)} 条，跳过无法解析的页 {skipped} 页")
     with open(out_csv, "w", newline="", encoding="utf-8-sig") as fo:
         w = csv.writer(fo)
         w.writerow(["页码", "来源", "偏移", "列数", "创建时间", "发送者/会话", "类型", "文本", "原始列"])

@@ -110,8 +110,8 @@ def main():
                     shown += 1
             raw_hits.append(f"{os.path.relpath(path, IN_DIR)}: 原始字节命中 {c} 次 -> 上下文见 {os.path.basename(ctx_file)}")
             products.append(ctx_file)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    [错误] 原始字节扫描失败 {os.path.relpath(path, IN_DIR)}: {type(e).__name__}: {e}")
 
     # 汇总搜索
     result_file = os.path.join(OUT_DIR, "搜索结果.txt")
