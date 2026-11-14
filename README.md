@@ -1,6 +1,16 @@
-# WeChat Recovery Kit
+<h1 align="center">WeChat Recovery Kit</h1>
 
-在你自己的 Windows 电脑上，从**只读副本**里找回本人微信 3.x / 4.x 中已删除的聊天。解密和扫描都在本仓库目录里完成，不写回微信的原始数据目录。本仓库不附带取密钥程序。
+<p align="center"><b>在本人 Windows 电脑上，从只读副本里找回已删除的微信 3.x / 4.x 聊天。</b></p>
+
+<p align="center">
+  <a href="https://github.com/jiaosir-cow/wechat-recovery-kit/issues"><b>问题</b></a>
+</p>
+
+<p align="center">
+  <img alt="code licence" src="https://img.shields.io/badge/code-MIT-1f6feb">
+</p>
+
+解密和扫描都在本仓库目录里完成，不写回微信的原始数据目录。本仓库不附带取密钥程序。
 
 只处理本人账号。不要用它读取他人聊天。
 
@@ -84,3 +94,9 @@ wechat-recovery-kit\
 ## License
 
 本仓库自有代码（`tools/*.py`、批处理、文档）以 [MIT License](LICENSE) 发布。第三方组件遵循各自许可。
+
+## 联系
+
+张向前 — jiaosirty@stu.yau.edu.cn
+
+问题请提交 GitHub Issue.
